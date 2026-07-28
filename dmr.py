@@ -314,8 +314,8 @@ class Rotor:
             r_2_1 = num_1 / den
             r_2_2 = num_2 / den
 
-            fn_f = np.sqrt(-r_2_2 / (4 * (np.pi**2)))
-            fn_b = np.sqrt(-r_2_1 / (4 * (np.pi**2)))
+            fn_f = np.sqrt(-r_2_2 / (4 * (np.pi**2))) * 60
+            fn_b = np.sqrt(-r_2_1 / (4 * (np.pi**2))) * 60
 
             return fn_f, fn_b
 
@@ -371,40 +371,49 @@ class Rotor:
 
             return fn_f, fn_b
 
-    def velocidades_criticas(self, excitacao="livre", gdl="ambos"):
-        if self.forca_assincrona is not None and excitacao not in [
-            "livre",
-            "desbalanceamento",
-        ]:
-            s = self.forca_assincrona.s
+    def velocidades_criticas(self, excitacao="livre", gdl="ambos", through="amplitude"):
+        if through == "amplitude":
+            if self.forca_assincrona is not None and excitacao not in [
+                "livre",
+                "desbalanceamento",
+            ]:
+                s = self.forca_assincrona.s
+            else:
+                s = 1
+
+            omega_list = np.linspace(0, 9000, 5000)
+
+            A1 = []
+            A2 = []
+            for omega_rpm in omega_list:
+                omega = omega_rpm * (2 * np.pi) / 60
+                amp = self.amplitude_vibracao(omega, s, excitacao, gdl, omega)
+                A1.append(amp[0])
+                A2.append(amp[1])
+
+            A1 = np.array(A1) / max(A1)
+            A2 = np.array(A2) / max(A2)
+
+            indices_1, _ = find_peaks(A1, 0.1)
+            indices_2, _ = find_peaks(A2, 0.1)
+
+            v1_c = omega_list[indices_1].tolist()
+            v2_c = omega_list[indices_2].tolist()
+
+            if len(v1_c) == 1 and len(v2_c) == 1:
+                fn_b, fn_f = sorted(v1_c + v2_c)
+            elif len(v1_c) > 1:
+                fn_b, fn_f = v1_c
+            else:
+                fn_b, fn_f = v2_c
+
         else:
-            s = 1
+            k = self.K()[0, 0]
+            m = self.M()[0, 0]
+            a = np.abs(self.G()[0, 1])
 
-        omega_list = np.linspace(0, 9000, 5000)
-
-        A1 = []
-        A2 = []
-        for omega_rpm in omega_list:
-            omega = omega_rpm * (2 * np.pi) / 60
-            amp = self.amplitude_vibracao(omega, s, excitacao, gdl, omega)
-            A1.append(amp[0])
-            A2.append(amp[1])
-
-        A1 = np.array(A1) / max(A1)
-        A2 = np.array(A2) / max(A2)
-
-        indices_1, _ = find_peaks(A1, 0.1)
-        indices_2, _ = find_peaks(A2, 0.1)
-
-        v1_c = omega_list[indices_1].tolist()
-        v2_c = omega_list[indices_2].tolist()
-
-        if len(v1_c) == 1 and len(v2_c) == 1:
-            fn_b, fn_f = sorted(v1_c + v2_c)
-        elif len(v1_c) > 1:
-            fn_b, fn_f = v1_c
-        else:
-            fn_b, fn_f = v2_c
+            fn_b = np.sqrt(k / (m + a)) * 60 / (2 * np.pi)
+            fn_f = np.sqrt(k / (m - a)) * 60 / (2 * np.pi)
 
         return fn_f, fn_b
 
@@ -413,14 +422,12 @@ class Rotor:
     ):
         k1 = self.K()[0, 0]
         k2 = self.K()[1, 1]
-
         m = self.M()[0, 0]
         a = np.abs(self.G()[0, 1])
 
         if excitacao == "livre":
             B = np.array([[0.0001], [0.0001]])
         elif excitacao == "desbalanceamento":
-            omega_rpm = omega
             s = 1
             F = self.desbalanceamento.F(omega, self.forma)
             B = np.array([[F], [F]])
@@ -435,12 +442,12 @@ class Rotor:
         w = omega * s
         A = np.array(
             [
-                [k1 - m * (w**2), a * w * omega_rpm],
-                [a * w * omega_rpm, k2 - m * (w**2)],
+                [  k1 - m * (w**2), a * w * omega_rpm],
+                [a * w * omega_rpm,   k2 - m * (w**2)],
             ]
         )
 
-        amp = la.solve(A, B)
+        amp = la.lstsq(A, B, cond=1e-6)[0]
 
         return amp.flatten()
 
@@ -543,7 +550,7 @@ class Rotor:
         )
         fig.update_yaxes(
             title="Amplitude [m]",
-            range=[0, max_amp / 50],
+            range=[0, max_amp / 80],
         )
         return fig
 
@@ -607,31 +614,29 @@ class Rotor:
                     name=k,
                 )
             )
-        try:
-            v_crit_f, v_crit_b = self.velocidades_criticas(
-                excitacao="assincrona",
-                gdl="separado"
+        v_crit_f, v_crit_b = self.velocidades_criticas(
+            excitacao="assincrona",
+            gdl="separado",
+            through=through,
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=[v_crit_f],
+                y=[v_crit_f / 60],
+                name="Velocidade Crítica - FW",
+                mode="markers",
+                marker=dict(color="#000000"),
             )
-            fig.add_trace(
-                go.Scatter(
-                    x=[v_crit_f],
-                    y=[v_crit_f / 60],
-                    name="Velocidade Crítica - FW",
-                    mode="markers",
-                    marker=dict(color="#000000"),
-                )
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=[v_crit_b],
+                y=[v_crit_b / 60],
+                name="Velocidade Crítica - BW",
+                mode="markers",
+                marker=dict(color="#000000"),
             )
-            fig.add_trace(
-                go.Scatter(
-                    x=[v_crit_b],
-                    y=[v_crit_b / 60],
-                    name="Velocidade Crítica - BW",
-                    mode="markers",
-                    marker=dict(color="#000000"),
-                )
-            )
-        except RuntimeError:
-            pass
+        )
 
         if title is None:
             fig.update_layout(
@@ -645,3 +650,91 @@ class Rotor:
         fig.update_xaxes(title="Velocidade [rpm]")
         fig.update_yaxes(title="Frequência [hz]")
         return fig
+
+    def plot_orbita(
+            self,
+            omega_list:list,
+            excitacao="desbalanceamento",
+            gdl="ambos",
+            omega_rpm=None,
+        ):
+        if excitacao != "desbalanceamento":
+            s = self.forca_assincrona.s
+            gdl = self.forca_assincrona.gdl
+        else:
+            s = 1
+            gdl = "ambos"
+
+        fig_dict = {}
+        for omega in omega_list:
+            omega *= (2 * np.pi) / 60
+            if excitacao == "assincrona" and gdl == "separado":
+                pass
+            else:
+                omega_rpm = omega
+            A1, A2 = self.amplitude_vibracao(
+                omega=omega * (2 * np.pi) / 60,
+                s=s,
+                excitacao=excitacao,
+                gdl=gdl,
+                omega_rpm=omega_rpm * (2 * np.pi) / 60,
+            )
+
+            if np.sign(A1 * A2) == -1:
+                precessao = "BW"
+            else:
+                if np.sign(A1) == 1:
+                    precessao = "FW"
+                else:
+                    precessao = "BW"
+
+            T = (2 * np.pi) / omega
+            dt = T / 10
+            t = np.linspace(0, T - dt, 100)
+            q1 = A1 * np.cos(s * omega * t)
+            q2 = A2 * np.sin(s * omega * t)
+
+            max_axis = np.max([np.max(q1), np.max(q2)])
+
+            fig = go.Figure()
+            fig.add_trace(
+                go.Scatter(
+                    x=q1,
+                    y=q2,
+                    name="Orbita",
+                    mode="lines",
+                    line={
+                        "color": "#4787FF",
+                        "width": 2,
+                    },
+                )
+            )
+            fig.add_trace(
+                go.Scatter(
+                    x=[q1[-1]],
+                    y=[q2[-1]],
+                    name=precessao,
+                    mode="markers",
+                    line={
+                        "color": "#4787FF",
+                    },
+                )
+            )
+            fig.update_layout(
+                title=f"<b>Órbita</b> {omega * 60 / (2 * np.pi):.0f} RPM",
+                autosize=False,
+                width=400,
+                height=400,
+            )
+            fig.update_xaxes(
+                title=r'$\text{Deslocamento } q_{1}$',
+                range=[-max_axis, max_axis]
+            )
+            fig.update_yaxes(
+                title=r'$\text{Deslocamento } q_{2}$',
+                range=[-max_axis, max_axis]
+            )
+
+            fig_dict[f"{omega * 60 / (2 * np.pi):.0f}RPM"] = fig
+
+        return fig_dict
