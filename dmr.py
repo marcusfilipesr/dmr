@@ -430,14 +430,14 @@ class Rotor:
         elif excitacao == "desbalanceamento":
             s = 1
             F = self.desbalanceamento.F(omega, self.forma)
-            B = np.array([[F], [F]])
+            B = np.array([F, F])
         else:
             if gdl == "ambos":
                 F = self.forca_assincrona.magnitude(self.forma)[0]
-                B = np.array([[F], [F]])
+                B = np.array([F, F])
             else:
                 F = self.forca_assincrona.magnitude(self.forma)
-                B = np.array([[F[0]], [F[1]]])
+                B = np.array([F[0], F[1]])
 
         w = omega * s
         A = np.array(
@@ -450,6 +450,122 @@ class Rotor:
         amp = la.lstsq(A, B, cond=1e-6)[0]
 
         return amp.flatten()
+
+    def F(self, omega, t, s=1, excitacao="livre", gdl="ambos"):
+        if excitacao == "livre":
+            B = np.array([[0.0001], [0.0001]])
+        elif excitacao == "desbalanceamento":
+            s = 1
+            F = self.desbalanceamento.F(omega, self.forma)
+            B = np.array([F , F])
+        else:
+            if gdl == "ambos":
+                F = self.forca_assincrona.magnitude(self.forma)[0]
+                B = np.array([F, F])
+            else:
+                F = self.forca_assincrona.magnitude(self.forma)
+                B = np.array([F[0], F[1]])
+
+        aux = s * omega * t
+        return np.array([B[0] * np.cos(aux), B[1] * np.sin(aux)])
+
+    def inverse_mass_matrix(self,):
+        self.M_inv = np.linalg.inv(self.M())
+
+    def A(self, omega):
+        M_inv = self.M_inv
+        A = np.zeros((2 * self.n_gdl, 2 * self.n_gdl))
+        A[0:self.n_gdl, self.n_gdl:2*self.n_gdl] = np.eye(self.n_gdl)
+        A[self.n_gdl:2*self.n_gdl, 0:self.n_gdl] = - M_inv @ self.K()
+        A[self.n_gdl:2*self.n_gdl, self.n_gdl:2*self.n_gdl] = - M_inv @ (self.C() + omega * self.G())
+
+        return A
+
+    def B(self, t, M_inv, omega, s, excitacao, gdl):
+        B = np.zeros(2 * self.n_gdl)
+        F = self.F(omega, t, s, excitacao, gdl)
+        B[self.n_gdl:2*self.n_gdl] = (M_inv @ F).flatten()
+        return B
+    
+    def dydt(self, t, y, A, M_inv, omega, s, excitacao, gdl):
+        B = self.B(t, M_inv, omega, s, excitacao, gdl)
+        return A @ y + B
+
+    def RK4(self, t, y, h, A, M_inv, omega, s, excitacao, gdl):
+        k1 = self.dydt(t,         y,          A, M_inv, omega, s, excitacao, gdl)
+        k2 = self.dydt(t + h/2,   y + h/2*k1, A, M_inv, omega, s, excitacao, gdl)
+        k3 = self.dydt(t + h/2,   y + h/2*k2, A, M_inv, omega, s, excitacao, gdl)
+        k4 = self.dydt(t + h,     y + h*k3,   A, M_inv, omega, s, excitacao, gdl)
+        return y + (h/6) * (k1 + 2*k2 + 2*k3 + k4)
+
+    def FRF(self, omega_range=(0,9000), n_points=1000):
+        I = np.eye(2 * self.n_gdl)
+        omega_list = np.linspace(omega_range[0], omega_range[1], n_points)
+        FRF = np.array((2 * self.n_gdl, n_points))
+        for i, omega in enumerate(omega_list):
+            FRF[:, i] = np.diag(np.linalg.inv(1j * omega * I - self.A(omega))) # @ self.B(t, self.M_inv, omega, s, excitacao, gdl)
+        return FRF
+
+    def resposta_temporal(self, omega, t_inicio=0.0, t_fim=1.0, dt=1e-4, excitacao="livre", gdl="ambos", omega_rpm=None):
+        if self.forca_assincrona is not None and excitacao not in [
+            "livre",
+            "desbalanceamento",
+        ]:
+            s = self.forca_assincrona.s
+            gdl = self.forca_assincrona.gdl
+        else:
+            s = 1
+            gdl = "ambos"
+
+        t = np.arange(t_inicio, t_fim, dt)
+        n = len(t)
+        Y = np.zeros((2 * self.n_gdl, n))
+        Y[:, 0] = np.array([0.0, 0.0, 0.0, 0.0])
+
+        A = self.A(omega)
+        M_inv = self.M_inv
+        for i in range(1, n):
+            if excitacao == "assincrona" and gdl == "separado":
+                w = omega_rpm * (2 * np.pi / 60)
+            else:
+                w = omega
+            Y[:, i] = self.RK4(
+                t=t[i-1],
+                y=Y[:, i-1],
+                h=dt,
+                A=A,
+                M_inv=M_inv,
+                omega=w,
+                s=s,
+                excitacao=excitacao,
+                gdl=gdl,
+            )
+
+        return Y[0, :], Y[1, :]
+
+    def amplitude_sinal_temporal(self, omega, t_fim=1, dt=1e-4, excitacao="livre", gdl="ambos", omega_rpm=None):
+                
+        q1, q2 = self.resposta_temporal(
+            omega=omega,
+            t_inicio=0,
+            t_fim=t_fim,
+            dt=dt,
+            excitacao=excitacao,
+            gdl=gdl,
+            omega_rpm=omega_rpm
+        )
+
+        n_pontos = t_fim / dt
+
+        idx_permanente = int(0.9 * n_pontos)
+        q1_ss = q1[idx_permanente:]
+        q2_ss = q2[idx_permanente:]
+
+        amp_q1 = (q1_ss.max() - q1_ss.min()) / 2
+        amp_q2 = (q2_ss.max() - q2_ss.min()) / 2
+        # amp_orbital = np.sqrt(q1_ss**2 + q2_ss**2).max()
+
+        return amp_q1, amp_q2
 
     def plot_resposta(
         self,
