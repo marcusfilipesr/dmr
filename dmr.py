@@ -800,30 +800,27 @@ class Rotor:
         for omega in omega_list:
             omega *= (2 * np.pi) / 60
             if excitacao == "assincrona" and gdl == "separado":
-                pass
+                omega_rpm *= (2 * np.pi) / 60
             else:
                 omega_rpm = omega
-            A1, A2 = self.amplitude_vibracao(
-                omega=omega * (2 * np.pi) / 60,
+            A1, B1, A2, B2 = self.amplitude_vibracao(
+                omega=omega,
                 s=s,
                 excitacao=excitacao,
                 gdl=gdl,
-                omega_rpm=omega_rpm * (2 * np.pi) / 60,
+                omega_rpm=omega_rpm,
             )
 
-            if np.sign(A1 * A2) == -1:
-                precessao = "BW"
+            if (A1 * B2) > 0:
+                precessao = "FW"
             else:
-                if np.sign(A1) == 1:
-                    precessao = "FW"
-                else:
-                    precessao = "BW"
+                precessao = "BW"
 
             T = (2 * np.pi) / omega
             dt = T / 10
             t = np.linspace(0, T - dt, 100)
-            q1 = A1 * np.cos(s * omega * t)
-            q2 = A2 * np.sin(s * omega * t)
+            q1 = A1 * np.cos(s * omega * t) + B1 * np.sin(s * omega * t)
+            q2 = A2 * np.cos(s * omega * t) + B2 * np.sin(s * omega * t)
 
             max_axis = np.max([np.max(q1), np.max(q2)])
 
