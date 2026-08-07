@@ -5,6 +5,18 @@ from scipy.optimize import newton, root
 from scipy.signal import find_peaks
 from scipy import linalg as la
 
+tableau_colors = {
+    "blue": "#1f77b4",
+    "orange": "#ff7f0e",
+    "green": "#2ca02c",
+    "red": "#d62728",
+    "purple": "#9467bd",
+    "brown": "#8c564b",
+    "pink": "#e377c2",
+    "gray": "#7f7f7f",
+    "olive": "#bcbd22",
+    "cyan": "#17becf",
+}
 
 class Material:
     def __init__(self, rho, E):
@@ -293,8 +305,15 @@ class Rotor:
 
         return self.eixo.C(self.forma) + C_b
 
-    def fn(self, omega_rpm, through="amplitude", excitacao="livre", gdl="ambos"):
+    def fn(self, omega_rpm, through="estados", excitacao="livre", gdl="ambos"):
         omega = omega_rpm * (2 * np.pi / 60)
+        if self.forca_assincrona is not None and excitacao not in [
+            "livre",
+            "desbalanceamento",
+        ]:
+            s = self.forca_assincrona.s
+        else:
+            s = 1
         if through == "equation":
             ## Equação Característica
             # m² u² + (2km + a²omega²) u + k²
@@ -317,16 +336,7 @@ class Rotor:
             fn_f = np.sqrt(-r_2_2 / (4 * (np.pi**2))) * 60
             fn_b = np.sqrt(-r_2_1 / (4 * (np.pi**2))) * 60
 
-            return fn_f, fn_b
-
         elif through == "amplitude":
-            if self.forca_assincrona is not None and excitacao not in [
-                "livre",
-                "desbalanceamento",
-            ]:
-                s = self.forca_assincrona.s
-            else:
-                s = 1
 
             w_list = np.linspace(0, 9000, 5000)
 
@@ -371,20 +381,33 @@ class Rotor:
                 fn_b, fn_f = sorted(v1_c + v2_c)
             elif len(v1_c) > 1:
                 fn_b, fn_f = v1_c
-            else:
+            elif len(v2_c) > 1:
                 fn_b, fn_f = v2_c
+            elif not v1_c and len(v2_c) == 1:
+                fn_b = v2_c[0]
+                fn_f = v2_c[0]
+            elif not v2_c and len(v1_c) == 1:
+                fn_b = v1_c[0]
+                fn_f = v1_c[0]
 
-            return fn_f, fn_b
+        elif through == "estados":
+            w = s * omega_rpm * (2 * np.pi) / 60
+            av = la.eig(self.A(w))[0]
+            wn = np.imag(av)
+            fn_f = wn[0] * 60 / (2 * np.pi)
+            fn_b = wn[2] * 60 / (2 * np.pi)
 
-    def velocidades_criticas(self, excitacao="livre", gdl="ambos", through="amplitude"):
+        return fn_f, fn_b
+
+    def velocidades_criticas(self, excitacao="livre", gdl="ambos", through="estados"):
+        if self.forca_assincrona is not None and excitacao not in [
+            "livre",
+            "desbalanceamento",
+        ]:
+            s = self.forca_assincrona.s
+        else:
+            s = 1
         if through == "amplitude":
-            if self.forca_assincrona is not None and excitacao not in [
-                "livre",
-                "desbalanceamento",
-            ]:
-                s = self.forca_assincrona.s
-            else:
-                s = 1
 
             omega_list = np.linspace(0, 9000, 5000)
 
@@ -414,13 +437,24 @@ class Rotor:
             else:
                 fn_b, fn_f = v2_c
 
-        else:
+        elif through == "equation":
             k = self.K()[0, 0]
             m = self.M()[0, 0]
             a = np.abs(self.G()[0, 1])
 
             fn_b = np.sqrt(k / (m + a)) * 60 / (2 * np.pi)
             fn_f = np.sqrt(k / (m - a)) * 60 / (2 * np.pi)
+
+        elif through == "estados":
+            omega_list = np.linspace(0, 9000, 5000)
+            for omega_rpm in omega_list:
+                omega = omega_rpm * (2 * np.pi) / 60
+                av = la.eig(self.A(omega))[0]
+                fn = np.imag(av) * 60 / (2 * np.pi)
+                if np.isclose(fn[0], omega_rpm * s, atol=10):  # wn = s * fn
+                    fn_f = fn[0] / s
+                if np.isclose(fn[2], omega_rpm * s, atol=10):
+                    fn_b = fn[2] / s
 
         return fn_f, fn_b
 
@@ -480,33 +514,34 @@ class Rotor:
         aux = s * omega * t
         return np.array([B[0] * np.cos(aux), B[1] * np.sin(aux)])
 
-    def inverse_mass_matrix(self,):
-        self.M_inv = np.linalg.inv(self.M())
-
     def A(self, omega):
-        M_inv = self.M_inv
-        A = np.zeros((2 * self.n_gdl, 2 * self.n_gdl))
-        A[0:self.n_gdl, self.n_gdl:2*self.n_gdl] = np.eye(self.n_gdl)
-        A[self.n_gdl:2*self.n_gdl, 0:self.n_gdl] = - M_inv @ self.K()
-        A[self.n_gdl:2*self.n_gdl, self.n_gdl:2*self.n_gdl] = - M_inv @ (self.C() + omega * self.G())
+        Z = np.zeros((self.n_gdl, self.n_gdl))
+        I = np.eye(self.n_gdl)
+
+        A = np.vstack(
+            [
+                np.hstack([Z, I]),
+                np.hstack([la.solve(-self.M(), self.K()), la.solve(-self.M(), (self.C() + omega * self.G()))])
+            ]
+        )
 
         return A
 
-    def B(self, t, M_inv, omega, s, excitacao, gdl):
-        B = np.zeros(2 * self.n_gdl)
+    def B(self, t, omega, s, excitacao, gdl):
         F = self.F(omega, t, s, excitacao, gdl)
-        B[self.n_gdl:2*self.n_gdl] = (M_inv @ F).flatten()
+        Z = np.zeros(self.n_gdl)
+        B = np.concat(Z, la.solve(self.M(), F).flatten())
         return B
     
-    def dydt(self, t, y, A, M_inv, omega, s, excitacao, gdl):
-        B = self.B(t, M_inv, omega, s, excitacao, gdl)
+    def dydt(self, t, y, A, omega, s, excitacao, gdl):
+        B = self.B(t, omega, s, excitacao, gdl)
         return A @ y + B
 
-    def RK4(self, t, y, h, A, M_inv, omega, s, excitacao, gdl):
-        k1 = self.dydt(t,         y,          A, M_inv, omega, s, excitacao, gdl)
-        k2 = self.dydt(t + h/2,   y + h/2*k1, A, M_inv, omega, s, excitacao, gdl)
-        k3 = self.dydt(t + h/2,   y + h/2*k2, A, M_inv, omega, s, excitacao, gdl)
-        k4 = self.dydt(t + h,     y + h*k3,   A, M_inv, omega, s, excitacao, gdl)
+    def RK4(self, t, y, h, A, omega, s, excitacao, gdl):
+        k1 = self.dydt(t,         y,          A, omega, s, excitacao, gdl)
+        k2 = self.dydt(t + h/2,   y + h/2*k1, A, omega, s, excitacao, gdl)
+        k3 = self.dydt(t + h/2,   y + h/2*k2, A, omega, s, excitacao, gdl)
+        k4 = self.dydt(t + h,     y + h*k3,   A, omega, s, excitacao, gdl)
         return y + (h/6) * (k1 + 2*k2 + 2*k3 + k4)
 
     def FRF(self, omega_range=(0,9000), n_points=1000):
@@ -534,7 +569,6 @@ class Rotor:
         Y[:, 0] = np.array([0.0, 0.0, 0.0, 0.0])
 
         A = self.A(omega)
-        M_inv = self.M_inv
         for i in range(1, n):
             if excitacao == "assincrona" and gdl == "separado":
                 w = omega_rpm * (2 * np.pi / 60)
@@ -545,7 +579,6 @@ class Rotor:
                 y=Y[:, i-1],
                 h=dt,
                 A=A,
-                M_inv=M_inv,
                 omega=w,
                 s=s,
                 excitacao=excitacao,
@@ -675,6 +708,9 @@ class Rotor:
 
         fig.update_layout(
             title=f"<b>Resposta a(o) {excitacao.replace('_', ' ')}</b>",
+            autosize=False,
+            width=1200,
+            height=600,
         )
         fig.update_xaxes(
             title=f"Velocidade [{speed_unit}]",
@@ -686,7 +722,7 @@ class Rotor:
         return fig
 
     def plot_campbell(
-        self, speed_range: tuple, n_points=100, through="amplitude", title=None
+        self, speed_range: tuple, n_points=100, through="estados", title=None
     ):
         fig = go.Figure()
         omega_list = np.linspace(
@@ -776,9 +812,15 @@ class Rotor:
         else:
             fig.update_layout(
                 title=title,
+                autosize=False,
+                width=1200,
+                height=600,
             )
 
-        fig.update_xaxes(title="Velocidade [rpm]")
+        fig.update_xaxes(
+            title="Velocidade [rpm]",
+            range=[0, speed_range[1]],
+        )
         fig.update_yaxes(title="Frequência [hz]")
         return fig
 
@@ -796,7 +838,9 @@ class Rotor:
             s = 1
             gdl = "ambos"
 
-        fig_dict = {}
+        fig = go.Figure()
+        color_iterator = iter(tableau_colors)
+        max_list = []
         for omega in omega_list:
             omega *= (2 * np.pi) / 60
             if excitacao == "assincrona" and gdl == "separado":
@@ -822,47 +866,51 @@ class Rotor:
             q1 = A1 * np.cos(s * omega * t) + B1 * np.sin(s * omega * t)
             q2 = A2 * np.cos(s * omega * t) + B2 * np.sin(s * omega * t)
 
-            max_axis = np.max([np.max(q1), np.max(q2)])
+            max_list.append(np.max([np.max(q1), np.max(q2)]))
 
-            fig = go.Figure()
+            plot_name = f"Orbita {precessao} - {omega * 60 / (2 * np.pi):.0f} RPM"
+            color = next(color_iterator)
             fig.add_trace(
                 go.Scatter(
                     x=q1,
                     y=q2,
-                    name="Orbita",
+                    name=plot_name,
                     mode="lines",
                     line={
-                        "color": "#4787FF",
+                        "color": color,
                         "width": 2,
                     },
+                    legendgroup=plot_name,
                 )
             )
             fig.add_trace(
                 go.Scatter(
                     x=[q1[-1]],
                     y=[q2[-1]],
-                    name=precessao,
+                    name=plot_name,
                     mode="markers",
                     line={
-                        "color": "#4787FF",
+                        "color": color,
                     },
+                    legendgroup=plot_name,
+                    showlegend=False,
                 )
             )
-            fig.update_layout(
-                title=f"<b>Órbita</b> {omega * 60 / (2 * np.pi):.0f} RPM",
-                autosize=False,
-                width=400,
-                height=400,
-            )
-            fig.update_xaxes(
-                title=r'$\text{Deslocamento } q_{1}$',
-                range=[-max_axis, max_axis]
-            )
-            fig.update_yaxes(
-                title=r'$\text{Deslocamento } q_{2}$',
-                range=[-max_axis, max_axis]
-            )
 
-            fig_dict[f"{omega * 60 / (2 * np.pi):.0f}RPM"] = fig
+        max_axis = np.max(max_list)
+        fig.update_layout(
+            title=f"<b>Órbitas</b> Resposta a(o) {excitacao.capitalize()}",
+            autosize=False,
+            width=800,
+            height=800,
+        )
+        fig.update_xaxes(
+            title=r'$\text{Deslocamento } q_{1}$',
+            range=[-max_axis, max_axis]
+        )
+        fig.update_yaxes(
+            title=r'$\text{Deslocamento } q_{2}$',
+            range=[-max_axis, max_axis]
+        )
 
-        return fig_dict
+        return fig
