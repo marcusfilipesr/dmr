@@ -334,26 +334,31 @@ class Rotor:
             A2 = []
             for w_rpm in w_list:
                 w = w_rpm * (2 * np.pi) / 60
-                amp = self.amplitude_vibracao(w, s, excitacao, gdl, omega)
-                if amp[0] == 0 and amp[1] != 0:
-                    A1.append(amp[1])
-                    A2.append(amp[1])
-                elif amp[1] == 0 and amp[0] != 0:
-                    A1.append(amp[0])
-                    A2.append(amp[0])
+                amp = self.amplitude_vibracao(w, s, excitacao, gdl, omega) 
+                #         0   1   2   3 
+                # amp = [A1, B1, A2, B2]
+                amp1 = np.sqrt(amp[0] ** 2 + amp[1] ** 2)
+                amp2 = np.sqrt(amp[2] ** 2 + amp[3] ** 2)
+
+                if amp1 == 0 and amp2 != 0:
+                    A1.append(np.abs(amp2))
+                    A2.append(np.abs(amp2))
+                elif amp2 == 0 and amp1 != 0:
+                    A1.append(np.abs(amp1))
+                    A2.append(np.abs(amp1))
                 else:
-                    A1.append(amp[0])
-                    A2.append(amp[1])
+                    A1.append(np.abs(amp1))
+                    A2.append(np.abs(amp2))
 
             if max(A1) != 0:
-                A1 = np.array(A1) / max(A1)
+                A1 = (np.array(A1) - np.min(A1)) / (np.max(A1) - np.min(A1))
                 indices_1, _ = find_peaks(A1, 0.1)
             else:
                 A1 = np.array(A1)
                 indices_1, _ = find_peaks(A1)
 
             if max(A2) != 0:
-                A2 = np.array(A2) / max(A2)
+                A2 = (np.array(A2) - np.min(A2)) / (np.max(A2) - np.min(A2))
                 indices_2, _ = find_peaks(A2, 0.1)
             else:
                 A2 = np.array(A2)
@@ -388,11 +393,13 @@ class Rotor:
             for omega_rpm in omega_list:
                 omega = omega_rpm * (2 * np.pi) / 60
                 amp = self.amplitude_vibracao(omega, s, excitacao, gdl, omega)
-                A1.append(amp[0])
-                A2.append(amp[1])
+                #         0   1   2   3 
+                # amp = [A1, B1, A2, B2]
+                A1.append(np.sqrt(amp[0] ** 2 + amp[1] ** 2))
+                A2.append(np.sqrt(amp[2] ** 2 + amp[3] ** 2))
 
-            A1 = np.array(A1) / max(A1)
-            A2 = np.array(A2) / max(A2)
+            A1 = (np.array(A1) - np.min(A1)) / (np.max(A1) - np.min(A1))
+            A2 = (np.array(A2) - np.min(A2)) / (np.max(A2) - np.min(A2))
 
             indices_1, _ = find_peaks(A1, 0.1)
             indices_2, _ = find_peaks(A2, 0.1)
@@ -422,28 +429,32 @@ class Rotor:
     ):
         k1 = self.K()[0, 0]
         k2 = self.K()[1, 1]
+        c1 = self.C()[0, 0]
+        c2 = self.C()[1, 1]
         m = self.M()[0, 0]
         a = np.abs(self.G()[0, 1])
 
         if excitacao == "livre":
-            B = np.array([[0.0001], [0.0001]])
+            B = np.array([0.0001, 0.0001, 0.0001, 0.0001])
         elif excitacao == "desbalanceamento":
             s = 1
             F = self.desbalanceamento.F(omega, self.forma)
-            B = np.array([F, F])
+            B = np.array([F, 0, 0, F])
         else:
             if gdl == "ambos":
                 F = self.forca_assincrona.magnitude(self.forma)[0]
-                B = np.array([F, F])
+                B = np.array([F, 0, 0, F])
             else:
                 F = self.forca_assincrona.magnitude(self.forma)
-                B = np.array([F[0], F[1]])
+                B = np.array([F[0], 0, 0, F[1]])
 
         w = omega * s
         A = np.array(
             [
-                [  k1 - m * (w**2), a * w * omega_rpm],
-                [a * w * omega_rpm,   k2 - m * (w**2)],
+                [  k1 - m * (w**2),                c1 * w,                    0,    a * w * omega_rpm],
+                [         - c1 * w,       k1 - m * (w**2),  - a * w * omega_rpm,                    0],
+                [                0,   - a * w * omega_rpm,      k2 - m * (w**2),               c2 * w],
+                [a * w * omega_rpm,                     0,             - c2 * w,      k2 - m * (w**2)],
             ]
         )
 
@@ -624,11 +635,15 @@ class Rotor:
                     omega_rpm=w_rpm * (2 * np.pi) / 60,
                 )
             )
-            amplitudes["A1"]["amplitude"].append(amp[0])
-            amplitudes["A2"]["amplitude"].append(amp[1])
+            amp1 = np.sqrt(amp[0] ** 2 + amp[1] ** 2)
+            amp2 = np.sqrt(amp[2] ** 2 + amp[3] ** 2)
+            amplitudes["A1"]["amplitude"].append(amp1)
+            amplitudes["A2"]["amplitude"].append(amp2)
 
-            amplitudes["A1"]["omega"].append(omega_rpm if speed_unit == "rpm" else omega_rpm / 60)
-            amplitudes["A2"]["omega"].append(omega_rpm if speed_unit == "rpm" else omega_rpm / 60)
+            freq = omega_rpm if speed_unit == "rpm" else omega_rpm / 60
+
+            amplitudes["A1"]["omega"].append(freq)
+            amplitudes["A2"]["omega"].append(freq)
 
         max_amp = np.max(amplitudes["A1"]["amplitude"])
         idx = 0
