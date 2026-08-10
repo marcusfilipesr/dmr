@@ -280,8 +280,10 @@ class Omega:
             return self.A + self.B * np.exp(- self.lbd * self.t(t))
 
     def dot(self, t):
+        if t > self.t_f:
+            return 0
         if self.tipo == "linear":
-            return self.B
+                return self.B
         elif self.tipo == "exponencial":
             return - self.lbd * self.B * np.exp(- self.lbd * self.t(t))
 
