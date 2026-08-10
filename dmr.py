@@ -1,6 +1,8 @@
 import numpy as np
 import plotly.graph_objects as go
 
+
+from plotly.subplots import make_subplots
 from scipy.optimize import newton, root
 from scipy.signal import find_peaks
 from scipy import linalg as la
@@ -101,8 +103,17 @@ class Eixo:
         a = 2 * self.rho * self.I * forma.intg_g2()
         return np.array(
             [
-                [0, a],
+                [ 0, a],
                 [-a, 0],
+            ]
+        )
+
+    def Kst(self, forma: FuncaoForma):
+        a = 2 * self.rho * self.I * forma.intg_g2()
+        return np.array(
+            [
+                [0, a],
+                [0, 0],
             ]
         )
 
@@ -149,10 +160,20 @@ class Disco:
         a = self.I_d_z * (forma.g(self.pos) ** 2)
         return np.array(
             [
-                [0, a],
+                [ 0, a],
                 [-a, 0],
             ]
         )
+
+    def Kst(self, forma: FuncaoForma):
+        a = self.I_d_z * (forma.g(self.pos) ** 2)
+        return np.array(
+            [
+                [0, a],
+                [0, 0],
+            ]
+        )
+
 
 
 class ForcaAssincrona:
@@ -188,8 +209,8 @@ class Desbalanceamento:
 
         self.magnitude = self.m_u * self.d
 
-    def F(self, omega: float, forma: FuncaoForma):
-        return self.magnitude * (omega**2) * forma.f(self.pos)
+    def F(self, forma: FuncaoForma):
+        return self.magnitude * forma.f(self.pos)
 
 
 class Mancal:
@@ -233,6 +254,36 @@ class Mancal:
             ]
         )
 
+class Omega:
+    def __init__(self, omega_0, omega_f, t_0, t_f, t_sim, tipo="linear", lbd=None):
+        self.tipo = tipo
+        if tipo == "linear":
+            self.A = (omega_0 * t_f - omega_f * t_0) / (t_f - t_0)
+            self.B = (omega_0 - omega_f) / (t_0 - t_f)
+        elif tipo == "exponencial":
+            if lbd is None:
+                lbd = 0.5
+            self.A = (omega_f * np.exp(lbd * t_f) - omega_0 * np.exp(lbd * t_0)) / (np.exp(lbd * t_f) - np.exp(lbd * t_0))
+            self.B = (omega_f - omega_0) / (np.exp(-lbd * t_f) - np.exp(-lbd * t_0))
+        self.lbd = lbd
+        self.t_f = t_f
+        self.t_0 = t_0
+        self.t_sim = t_sim
+
+    def t(self, t):
+        return min(t, self.t_f)
+        
+    def v(self, t):
+        if self.tipo == "linear":
+            return self.A + self.B * self.t(t)
+        elif self.tipo == "exponencial":
+            return self.A + self.B * np.exp(- self.lbd * self.t(t))
+
+    def dot(self, t):
+        if self.tipo == "linear":
+            return self.B
+        elif self.tipo == "exponencial":
+            return - self.lbd * self.B * np.exp(- self.lbd * self.t(t))
 
 class Rotor:
     def __init__(
@@ -304,6 +355,17 @@ class Rotor:
                     C_b += mancal.C(self.forma)
 
         return self.eixo.C(self.forma) + C_b
+
+    def Kst(self,):
+        Kst_d = np.zeros((self.n_gdl, self.n_gdl))
+        if self.disco is not None:
+            if isinstance(self.disco, Disco):
+                Kst_d = self.disco.Kst(self.forma)
+            elif isinstance(self.disco, list):
+                for disco in self.disco:
+                    Kst_d += disco.Kst(self.forma)
+
+        return self.eixo.Kst(self.forma) + Kst_d
 
     def fn(self, omega_rpm, through="estados", excitacao="livre", gdl="ambos"):
         omega = omega_rpm * (2 * np.pi / 60)
@@ -407,6 +469,9 @@ class Rotor:
             s = self.forca_assincrona.s
         else:
             s = 1
+
+        fn_f, fn_b = 0, 0
+
         if through == "amplitude":
 
             omega_list = np.linspace(0, 9000, 5000)
@@ -459,7 +524,7 @@ class Rotor:
         return fn_f, fn_b
 
     def amplitude_vibracao(
-        self, omega, s=1, excitacao="livre", gdl="ambos", omega_rpm=None
+        self, omega, s=1, excitacao="livre", gdl="ambos", omega_rpm=None, omega_dot=0
     ):
         k1 = self.K()[0, 0]
         k2 = self.K()[1, 1]
@@ -472,8 +537,8 @@ class Rotor:
             B = np.array([0.0001, 0.0001, 0.0001, 0.0001])
         elif excitacao == "desbalanceamento":
             s = 1
-            F = self.desbalanceamento.F(omega, self.forma)
-            B = np.array([F, 0, 0, F])
+            F = self.desbalanceamento.F(self.forma)
+            B = np.array([F * (omega ** 2), (F * omega_dot), - (F * omega_dot), F * (omega ** 2)])
         else:
             if gdl == "ambos":
                 F = self.forca_assincrona.magnitude(self.forma)[0]
@@ -485,8 +550,8 @@ class Rotor:
         w = omega * s
         A = np.array(
             [
-                [  k1 - m * (w**2),                c1 * w,                    0,    a * w * omega_rpm],
-                [         - c1 * w,       k1 - m * (w**2),  - a * w * omega_rpm,                    0],
+                [  k1 - m * (w**2),                c1 * w,        a * omega_dot,    a * w * omega_rpm],
+                [         - c1 * w,       k1 - m * (w**2),  - a * w * omega_rpm,        a * omega_dot],
                 [                0,   - a * w * omega_rpm,      k2 - m * (w**2),               c2 * w],
                 [a * w * omega_rpm,                     0,             - c2 * w,      k2 - m * (w**2)],
             ]
@@ -496,13 +561,17 @@ class Rotor:
 
         return amp.flatten()
 
-    def F(self, omega, t, s=1, excitacao="livre", gdl="ambos"):
+    def F(self, omega, t, s=1, excitacao="livre", gdl="ambos", omega_dot=0):
         if excitacao == "livre":
             B = np.array([[0.0001], [0.0001]])
         elif excitacao == "desbalanceamento":
             s = 1
-            F = self.desbalanceamento.F(omega, self.forma)
-            B = np.array([F , F])
+            F = self.desbalanceamento.F(self.forma)
+            aux = s * omega * t
+            return np.array([
+                F * ((omega ** 2) * np.cos(aux) + omega_dot * np.sin(aux)),
+                F * ((omega ** 2) * np.sin(aux) - omega_dot * np.cos(aux))
+            ])
         else:
             if gdl == "ambos":
                 F = self.forca_assincrona.magnitude(self.forma)[0]
@@ -514,34 +583,34 @@ class Rotor:
         aux = s * omega * t
         return np.array([B[0] * np.cos(aux), B[1] * np.sin(aux)])
 
-    def A(self, omega):
+    def A(self, omega, omega_dot=0):
         Z = np.zeros((self.n_gdl, self.n_gdl))
         I = np.eye(self.n_gdl)
 
         A = np.vstack(
             [
                 np.hstack([Z, I]),
-                np.hstack([la.solve(-self.M(), self.K()), la.solve(-self.M(), (self.C() + omega * self.G()))])
+                np.hstack([la.solve(-self.M(), (self.K() + omega_dot * self.Kst())), la.solve(-self.M(), (self.C() + omega * self.G()))])
             ]
         )
 
         return A
 
-    def B(self, t, omega, s, excitacao, gdl):
-        F = self.F(omega, t, s, excitacao, gdl)
+    def B(self, t, omega, s, excitacao, gdl, omega_dot):
+        F = self.F(omega, t, s, excitacao, gdl, omega_dot)
         Z = np.zeros(self.n_gdl)
-        B = np.concat(Z, la.solve(self.M(), F).flatten())
+        B = np.concat([Z, la.solve(self.M(), F).flatten()])
         return B
     
-    def dydt(self, t, y, A, omega, s, excitacao, gdl):
-        B = self.B(t, omega, s, excitacao, gdl)
+    def dydt(self, t, y, A, omega, s, excitacao, gdl, omega_dot):
+        B = self.B(t, omega, s, excitacao, gdl, omega_dot)
         return A @ y + B
 
-    def RK4(self, t, y, h, A, omega, s, excitacao, gdl):
-        k1 = self.dydt(t,         y,          A, omega, s, excitacao, gdl)
-        k2 = self.dydt(t + h/2,   y + h/2*k1, A, omega, s, excitacao, gdl)
-        k3 = self.dydt(t + h/2,   y + h/2*k2, A, omega, s, excitacao, gdl)
-        k4 = self.dydt(t + h,     y + h*k3,   A, omega, s, excitacao, gdl)
+    def RK4(self, t, y, h, A, omega, s, excitacao, gdl, omega_dot):
+        k1 = self.dydt(t,         y,          A, omega, s, excitacao, gdl, omega_dot)
+        k2 = self.dydt(t + h/2,   y + h/2*k1, A, omega, s, excitacao, gdl, omega_dot)
+        k3 = self.dydt(t + h/2,   y + h/2*k2, A, omega, s, excitacao, gdl, omega_dot)
+        k4 = self.dydt(t + h,     y + h*k3,   A, omega, s, excitacao, gdl, omega_dot)
         return y + (h/6) * (k1 + 2*k2 + 2*k3 + k4)
 
     def FRF(self, omega_range=(0,9000), n_points=1000):
@@ -562,18 +631,31 @@ class Rotor:
         else:
             s = 1
             gdl = "ambos"
-
-        t = np.arange(t_inicio, t_fim, dt)
+        if isinstance(omega, Omega):
+            t = np.arange(omega.t_0, omega.t_sim, dt)
+        else:
+            t = np.arange(t_inicio, t_fim, dt)
+        
         n = len(t)
         Y = np.zeros((2 * self.n_gdl, n))
         Y[:, 0] = np.array([0.0, 0.0, 0.0, 0.0])
 
-        A = self.A(omega)
+        if not isinstance(omega, Omega):
+            A = self.A(omega * (2 * np.pi / 60))
+
+        omega_dot = 0
         for i in range(1, n):
             if excitacao == "assincrona" and gdl == "separado":
                 w = omega_rpm * (2 * np.pi / 60)
             else:
-                w = omega
+                if isinstance(omega, Omega):
+                    w = omega.v(t[i-1]) * (2 * np.pi / 60)
+                else:
+                    w = omega * (2 * np.pi / 60)
+            if isinstance(omega, Omega):
+                omega_dot = omega.dot(t[i-1]) * (2 * np.pi / 60)
+                A = self.A(omega.v(t[i-1]) * (2 * np.pi / 60), omega_dot)
+            
             Y[:, i] = self.RK4(
                 t=t[i-1],
                 y=Y[:, i-1],
@@ -583,6 +665,7 @@ class Rotor:
                 s=s,
                 excitacao=excitacao,
                 gdl=gdl,
+                omega_dot=omega_dot,
             )
 
         return Y[0, :], Y[1, :]
@@ -611,13 +694,105 @@ class Rotor:
 
         return amp_q1, amp_q2
 
+    def plot_resposta_temporal(
+            self,
+            omega,
+            t_inicio=0.0,
+            t_fim=1.0,
+            dt=1e-4,
+            excitacao="livre",
+            gdl="ambos",
+            omega_rpm=None,
+            plot_omega=False,
+    ):
+        q1, q2 = self.resposta_temporal(
+            omega=omega,
+            t_inicio=0,
+            t_fim=t_fim,
+            dt=dt,
+            excitacao=excitacao,
+            gdl=gdl,
+            omega_rpm=omega_rpm
+        )
+
+        ## Convertendo para o domínio físico
+        u = q1 * self.forma.f(self.eixo.L / 2)
+        theta = - q1 * self.forma.g(self.eixo.L / 2)
+        v = q2 * self.forma.f(self.eixo.L / 2)
+        psi = q2 * self.forma.g(self.eixo.L / 2)
+
+        if isinstance(omega, Omega):
+            t = np.arange(omega.t_0, omega.t_sim, dt)
+            if plot_omega:
+                omega_list = np.array([omega.v(i) for i in t])
+        else:
+            t = np.arange(t_inicio, t_fim, dt)
+            if plot_omega:
+                omega_list = np.ones(len(t)) * omega
+
+        fig = make_subplots(specs=[[{"secondary_y": True}]])
+        fig.add_trace(
+            go.Scatter(
+                x=t,
+                y=u,
+                name="u",
+                mode="lines",
+                line={
+                    "color": "#4787FF",
+                    "width": 2,
+                },
+            ),
+            secondary_y=False,
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=t,
+                y=v,
+                name="v",
+                mode="lines",
+                line={
+                    "color": "#FF4747",
+                    "width": 2,
+                },
+            ),
+            secondary_y=False,
+        )
+        if plot_omega:
+            fig.add_trace(
+                go.Scatter(
+                    x=t,
+                    y=omega_list,
+                    name="Velocidade",
+                    mode="lines",
+                    line={
+                        "color": "#1D1D1D",
+                        "width": 1,
+                    },
+                ),
+                secondary_y=True,
+            )
+            fig.update_yaxes(title_text="Velocidade [RPM]", secondary_y=True)
+
+        fig.update_layout(
+            title_text="<b>Resposta Temporal</b>",
+            autosize=False,
+            width=1200,
+            height=600,
+        )
+        fig.update_xaxes(
+            title_text="Tempo [s]",
+        )
+        fig.update_yaxes(title_text="Amplitude [m]", secondary_y=False)
+        return fig
+
     def plot_resposta(
         self,
-        speed_range: tuple,
+        omega: tuple,
         n_points=5000,
         excitacao="desbalanceamento",
         w_rpm=None,
         speed_unit="rpm",
+        y_axis_type="log"
     ):
         if excitacao != "desbalanceamento":
             s = self.forca_assincrona.s
@@ -637,11 +812,21 @@ class Rotor:
                 excitacao=excitacao,
                 gdl=gdl,
             )
-            
-        fig = go.Figure()
-        omega_list = np.linspace(
-            speed_range[0], speed_range[1], num=n_points, endpoint=True
-        )
+
+        if isinstance(omega, Omega):
+            t_0 = omega.t_0
+            t_f = omega.t_sim
+
+            t_list = np.linspace(t_0, t_f, num=n_points, endpoint=True)
+            omega_list = []
+            omega_dot_list = []
+            for t in t_list:
+                omega_list.append(omega.v(t))
+                omega_dot_list.append(omega.dot(t))
+        else:
+            omega_list = np.linspace(
+                omega[0], omega[1], num=n_points, endpoint=True
+            )
 
         amplitudes = {}
         amplitude_dict = {
@@ -653,21 +838,34 @@ class Rotor:
         amplitudes["A2"] = amplitude_dict
 
         cores = ["#4787FF", "#FF4747"]
+        fig = go.Figure()
         for i, omega_rpm in enumerate(omega_list):
             if excitacao == "assincrona" and gdl == "separado":
                 pass
             else:
                 w_rpm = omega_rpm
-
-            amp = np.abs(
-                self.amplitude_vibracao(
-                    omega=omega_rpm * (2 * np.pi) / 60,
-                    s=s,
-                    excitacao=excitacao,
-                    gdl=gdl,
-                    omega_rpm=w_rpm * (2 * np.pi) / 60,
+            if isinstance(omega, Omega):
+                amp = np.abs(
+                    self.amplitude_vibracao(
+                        omega=omega_rpm * (2 * np.pi) / 60,
+                        s=s,
+                        excitacao=excitacao,
+                        gdl=gdl,
+                        omega_rpm=w_rpm * (2 * np.pi) / 60,
+                        omega_dot=omega_dot_list[i] * (2 * np.pi) / 60,
+                    )
                 )
-            )
+            else:
+                amp = np.abs(
+                    self.amplitude_vibracao(
+                        omega=omega_rpm * (2 * np.pi) / 60,
+                        s=s,
+                        excitacao=excitacao,
+                        gdl=gdl,
+                        omega_rpm=w_rpm * (2 * np.pi) / 60,
+                    )
+                )
+
             amp1 = np.sqrt(amp[0] ** 2 + amp[1] ** 2)
             amp2 = np.sqrt(amp[2] ** 2 + amp[3] ** 2)
             amplitudes["A1"]["amplitude"].append(amp1)
@@ -687,10 +885,10 @@ class Rotor:
                     y=amplitude["amplitude"],
                     mode="lines",
                     name=name,
-                    line=dict(
-                        color=cores[idx],
-                        width=2,
-                    ),
+                    line={
+                        "color": cores[idx],
+                        "width": 2,
+                    },
                     legendgroup=name,
                     showlegend=True,
                 )
@@ -717,7 +915,8 @@ class Rotor:
         )
         fig.update_yaxes(
             title="Amplitude [m]",
-            range=[0, max_amp / 80],
+            # range=[0, max_amp / 50],
+            type=y_axis_type,
         )
         return fig
 
