@@ -255,7 +255,7 @@ class Mancal:
         )
 
 class Omega:
-    def __init__(self, omega_0, omega_f, t_0, t_f, t_sim, tipo="linear", lbd=None):
+    def __init__(self, omega_0, omega_f, t_0, t_f, t_sim=None, tipo="linear", lbd=None):
         self.tipo = tipo
         if tipo == "linear":
             self.A = (omega_0 * t_f - omega_f * t_0) / (t_f - t_0)
@@ -268,6 +268,8 @@ class Omega:
         self.lbd = lbd
         self.t_f = t_f
         self.t_0 = t_0
+        if t_sim is None:
+            t_sim = t_f
         self.t_sim = t_sim
 
     def t(self, t):
@@ -634,9 +636,9 @@ class Rotor:
             s = 1
             gdl = "ambos"
         if isinstance(omega, Omega):
-            t = np.arange(omega.t_0, omega.t_sim, dt)
+            t = np.arange(omega.t_0, omega.t_sim + dt, dt)
         else:
-            t = np.arange(t_inicio, t_fim, dt)
+            t = np.arange(t_inicio, t_fim + dt, dt)
         
         n = len(t)
         Y = np.zeros((2 * self.n_gdl, n))
@@ -654,9 +656,10 @@ class Rotor:
                     w = omega.v(t[i-1]) * (2 * np.pi / 60)
                 else:
                     w = omega * (2 * np.pi / 60)
+
             if isinstance(omega, Omega):
                 omega_dot = omega.dot(t[i-1]) * (2 * np.pi / 60)
-                A = self.A(omega.v(t[i-1]) * (2 * np.pi / 60), omega_dot)
+                A = self.A(w, omega_dot)
             
             Y[:, i] = self.RK4(
                 t=t[i-1],
@@ -671,30 +674,6 @@ class Rotor:
             )
 
         return Y[0, :], Y[1, :]
-
-    def amplitude_sinal_temporal(self, omega, t_fim=1, dt=1e-4, excitacao="livre", gdl="ambos", omega_rpm=None):
-                
-        q1, q2 = self.resposta_temporal(
-            omega=omega,
-            t_inicio=0,
-            t_fim=t_fim,
-            dt=dt,
-            excitacao=excitacao,
-            gdl=gdl,
-            omega_rpm=omega_rpm
-        )
-
-        n_pontos = t_fim / dt
-
-        idx_permanente = int(0.9 * n_pontos)
-        q1_ss = q1[idx_permanente:]
-        q2_ss = q2[idx_permanente:]
-
-        amp_q1 = (q1_ss.max() - q1_ss.min()) / 2
-        amp_q2 = (q2_ss.max() - q2_ss.min()) / 2
-        # amp_orbital = np.sqrt(q1_ss**2 + q2_ss**2).max()
-
-        return amp_q1, amp_q2
 
     def plot_resposta_temporal(
             self,
@@ -723,12 +702,14 @@ class Rotor:
         v = q2 * self.forma.f(self.eixo.L / 2)
         psi = q2 * self.forma.g(self.eixo.L / 2)
 
+        amp = np.sqrt(u ** 2 + v ** 2)
+
         if isinstance(omega, Omega):
-            t = np.arange(omega.t_0, omega.t_sim, dt)
+            t = np.arange(omega.t_0, omega.t_sim + dt, dt)
             if plot_omega:
                 omega_list = np.array([omega.v(i) for i in t])
         else:
-            t = np.arange(t_inicio, t_fim, dt)
+            t = np.arange(t_inicio, t_fim + dt, dt)
             if plot_omega:
                 omega_list = np.ones(len(t)) * omega
 
@@ -736,24 +717,11 @@ class Rotor:
         fig.add_trace(
             go.Scatter(
                 x=t,
-                y=u,
-                name="u",
+                y=amp,
+                name="Amplitude",
                 mode="lines",
                 line={
                     "color": "#4787FF",
-                    "width": 2,
-                },
-            ),
-            secondary_y=False,
-        )
-        fig.add_trace(
-            go.Scatter(
-                x=t,
-                y=v,
-                name="v",
-                mode="lines",
-                line={
-                    "color": "#FF4747",
                     "width": 2,
                 },
             ),
