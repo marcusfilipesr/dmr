@@ -265,6 +265,13 @@ class Omega:
                 lbd = 0.5
             self.A = (omega_f * np.exp(lbd * t_f) - omega_0 * np.exp(lbd * t_0)) / (np.exp(lbd * t_f) - np.exp(lbd * t_0))
             self.B = (omega_f - omega_0) / (np.exp(-lbd * t_f) - np.exp(-lbd * t_0))
+        elif tipo == "s-curve":
+            self.dt = t_f - t_0
+            self.A = omega_0
+            self.B = omega_f - omega_0
+
+        self.omega_f = omega_f
+        self.omega_0 = omega_0
         self.lbd = lbd
         self.t_f = t_f
         self.t_0 = t_0
@@ -280,15 +287,25 @@ class Omega:
             return self.A + self.B * self.t(t)
         elif self.tipo == "exponencial":
             return self.A + self.B * np.exp(- self.lbd * self.t(t))
+        elif self.tipo == "s-curve":
+            if t >= self.t_f:
+                return self.omega_f
+            x = (t - self.t_0) / self.dt
+            s = 3 * x**2 - 2 * x**3
+            return self.A + self.B * s
 
     def dot(self, t):
-        if t > self.t_f:
+        if t >= self.t_f:
             return 0
         if self.tipo == "linear":
                 return self.B
         elif self.tipo == "exponencial":
             return - self.lbd * self.B * np.exp(- self.lbd * self.t(t))
-
+        elif self.tipo == "s-curve":
+            x = (t - self.t_0) / self.dt
+            ds_dx = 6 * x - 6 * x**2
+            ds_dt = ds_dx / self.dt
+            return self.B * ds_dt
 class Rotor:
     def __init__(
         self,
