@@ -475,8 +475,9 @@ class Rotor:
 
         elif through == "estados":
             w = s * omega_rpm * (2 * np.pi) / 60
-            av = la.eig(self.A(w))[0]
-            wn = np.imag(av)
+            eval, evec = la.eig(self.A(w))
+            wn = np.imag(eval)
+
             fn_f = wn[0] * 60 / (2 * np.pi)
             fn_b = wn[2] * 60 / (2 * np.pi)
 
@@ -815,14 +816,16 @@ class Rotor:
                 omega[0], omega[1], num=n_points, endpoint=True
             )
 
-        amplitudes = {}
-        amplitude_dict = {
-            "amplitude": [],
-            "omega": [],
+        amplitudes = {
+            "A1":{
+                "amplitude": [],
+                "omega": [],
+            },
+            "A2":{
+                "amplitude": [],
+                "omega": [],
+            },
         }
-
-        amplitudes["A1"] = amplitude_dict
-        amplitudes["A2"] = amplitude_dict
 
         cores = ["#4787FF", "#FF4747"]
         fig = go.Figure()
