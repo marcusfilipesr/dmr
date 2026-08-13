@@ -477,9 +477,29 @@ class Rotor:
             w = s * omega_rpm * (2 * np.pi) / 60
             eval, evec = la.eig(self.A(w))
             wn = np.imag(eval)
-
-            fn_f = wn[0] * 60 / (2 * np.pi)
-            fn_b = wn[2] * 60 / (2 * np.pi)
+            ## avaliando para o primeiro wn (indice 0)
+            x = evec[:,0][0]
+            y = evec[:,0][1]
+            b = np.abs(np.conjugate(x - 1j * y) / 2)
+            f = np.abs((x + 1j * y) / 2)
+            if f >= b:
+                fn_f = wn[0] * 60 / (2 * np.pi)
+                fn_b = wn[2] * 60 / (2 * np.pi)
+            elif b > f:
+                fn_b = wn[0] * 60 / (2 * np.pi)
+                fn_f = wn[2] * 60 / (2 * np.pi)
+            
+            ## avaliando para o segundo wn (indice 2)
+            x = evec[:,2][0]
+            y = evec[:,2][1]
+            b = np.abs(np.conjugate(x - 1j * y) / 2)
+            f = np.abs((x + 1j * y) / 2)
+            if f >= b:
+                fn_f = wn[2] * 60 / (2 * np.pi)
+                fn_b = wn[0] * 60 / (2 * np.pi)
+            elif b > f:
+                fn_b = wn[2] * 60 / (2 * np.pi)
+                fn_f = wn[0] * 60 / (2 * np.pi)
 
         return fn_f, fn_b
 
